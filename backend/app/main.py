@@ -26,10 +26,15 @@ def preload_models():
     # Pierwsze wczytanie polskiego NER trwa kilkadziesiąt sekund; nie może blokować zapisu pisma.
     import threading
     def load():
-        try:
-            from .services.ner import nlp
-            nlp()
-        except Exception:pass
+        for loader in ('ner','embeddings'):
+            try:
+                if loader=='ner':
+                    from .services.ner import nlp
+                    nlp()
+                else:
+                    from .services.ai import embedding_model
+                    embedding_model()
+            except Exception:pass
     threading.Thread(target=load,daemon=True).start()
 
 class Strict(BaseModel):model_config=ConfigDict(extra='forbid')
@@ -187,7 +192,6 @@ def edit_case(ident:str,body:CasePatch,user=Depends(current_user),db:DBSession=D
         for d in db.scalars(select(Draft).where(Draft.case_id==ident,Draft.case_version==old_version)):d.case_version=c.version
     if c.answered:c.status='zakonczony'
     elif changed and c.status=='gotowy_do_eksportu':c.status='projekt_odpowiedzi'
-    elif c.status=='zarejestrowany' and c.units:c.status='oczekuje_na_materialy'
     log(db,user,ident,'case_updated');db.commit();return case_dict(c)
 @app.post('/api/cases/{ident}/events')
 def event(ident:str,body:Note,user=Depends(current_user),db:DBSession=Depends(get_db)):
@@ -236,7 +240,9 @@ def unit_suggestions(ident:str,user=Depends(current_user),db:DBSession=Depends(g
         for u in set(past.units or [])|({r['unit_id']} if r['unit_id'] else set()):
             scores[u]=scores.get(u,0)+1.5;reasons.setdefault(u,[]).append('podobna sprawa '+past.reference)
     units={u.id:u for u in db.scalars(select(Unit)).all()}
-    result=[{'id':k,'name':units[k].name,'reason':'; '.join(dict.fromkeys(reasons[k])).capitalize(),'score':round(v,1)} for k,v in scores.items() if k in units]
+    top=max(scores.values(),default=0)
+    # Słabe dopasowania (pojedyncze słowo przy wyraźnie lepszej propozycji) tylko zaciemniają wybór.
+    result=[{'id':k,'name':units[k].name,'reason':(lambda t:t[:1].upper()+t[1:])('; '.join(dict.fromkeys(reasons[k]))),'score':round(v,1)} for k,v in scores.items() if k in units and v>=max(1,top*0.4)]
     return sorted(result,key=lambda r:r['score'],reverse=True)[:4]
 @app.get('/api/cases/{ident}/similar')
 def similar(ident:str,all_archive:bool=False,user=Depends(current_user),db:DBSession=Depends(get_db)):

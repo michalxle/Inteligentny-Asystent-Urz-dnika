@@ -55,7 +55,10 @@ def stems(text):
 # ---------------------------------------------------------------- pytania z wniosku
 
 _BULLET=r'(?:[•●▪◦‣\-–*]|\d{1,2}[.)]|[a-z][.)])\s'
-_SKIP=re.compile(r'^(dzień dobry|witam|szanown|pozdrawiam|z (wyrazami|poważaniem)|z poważaniem|dziękuję|--|biuro komunikacji|urząd miasta|tel\.|e-?mail:|wniosek o udostępnienie informacji publicznej\W*$)',re.I)
+_SKIP=re.compile(r'^(pozdrawiam|z (wyrazami|poważaniem)|z poważaniem|dziękuję|--|biuro komunikacji|urząd miasta|tel\.|e-?mail:|(od|do|dw|temat|wysłano|data|from|to|sent|subject|cc)\s*:|wniosek o udostępnienie informacji publicznej\W*$)',re.I)
+_GREETING=re.compile(r'^(dzień dobry|witam|szanown\w*\s+\w+|szanowni państwo)[\s,!.]*',re.I)
+# Wskazanie sposobu udostępnienia nie jest pytaniem merytorycznym.
+_DELIVERY=re.compile(r'(?i)(odpowied\w*|informacj\w*|dokument\w*|skan\w*)\s+(na|pod)\s+(mój\s+|nasz\s+)?(adres|e-?mail)|prosz\w+\s+o\s+(przesłanie|odpowiedź)\s+(odpowiedzi\s+)?(pocztą|e-?mailem|na adres|drogą)|e-?doręcze')
 _REQUEST=re.compile(r'\?|prosz|prosimy|wnosz|wnioskuj|zapyta|pytam|pragn[eę]|zwracam|zwracamy|udost[eę]pn|przes[łl]a|poda(nie|ć)|informacj|zestawien',re.I)
 
 def _reflow(text):
@@ -102,6 +105,8 @@ def _numbered(text):
 
 _ABBR={'art','ust','pkt','poz','nr','ul','al','pl','os','dz','u','r','zm','tj','ww','np','pn','im','św','tel','sp','o.o','tzw','dot','jw','ok'}
 def _sentences(paragraph):
+    paragraph=_GREETING.sub('',paragraph).strip()
+    paragraph=paragraph[:1].upper()+paragraph[1:]
     parts=[];start=0
     for m in re.finditer(r'(?<=[.?!])\s+(?=[A-ZŁŚŻŹĆŃÓĄĘ])',paragraph):
         word=re.findall(r'([\wąęółśżźćń.]+)[.?!]$',paragraph[start:m.start()])
@@ -129,7 +134,7 @@ def extract_questions(text):
                 else:
                     items+=[s for s in intro if _REQUEST.search(s)]
                 i=j;continue
-            items+=[s for s in _sentences(p) if not _SKIP.match(s) and _REQUEST.search(s) and len(s)>15]
+            items+=[s for s in _sentences(p) if not _SKIP.match(s) and not _DELIVERY.search(s) and _REQUEST.search(s) and len(s)>15]
             i+=1
         if not items:items=[p for p in paragraphs if len(p)>30 and not _SKIP.match(p)][:8]
     return [{'id':f'q{i+1}','text':s[:4000],'status':'brak_materialu'} for i,s in enumerate(items[:30])]
@@ -245,11 +250,18 @@ def suggest_title(questions,text):
     source=questions[0]['text'] if questions else next((p for p in _reflow(text) if len(p)>30),'')
     source=re.sub(r'(?i)^(w trybie (?:dostępu do )?informacji publicznej|w trybie ustawy o dostępie do informacji publicznej|działając na podstawie[^,]*,)\s*','',source)
     source=re.sub(r'(?i)^(chcę|chciał(?:a|bym)|pragnę)\s+(państwa\s+)?zapytać\s+(o\s+to,?\s*)?|^(proszę|prosimy|wnoszę|wnioskuję)\s+(o\s+)?(udostępnienie|przesłanie|podanie)?\s*(informacji\s+)?(o|dot\.?|dotyczącej|w zakresie)?\s*','',source).strip(' ,.:')
+    source=re.sub(r'(?i)^(informację|informacji|informacja|dane)\s*(,|o|na temat|dot\.?|dotyczącą|w zakresie)?\s*','',source).strip(' ,.:')
     if len(source)>140:source=source[:140].rsplit(' ',1)[0]+'…'
     return source[:1].upper()+source[1:]
+
+def suggest_delivery(text):
+    if re.search(r'(?i)e-?doręcz',text):return 'e-Doręczenia'
+    if re.search(r'(?i)poczt\w+ tradycyjn|listem|na adres korespondencyjny',text):return 'poczta tradycyjna'
+    if re.search(r'(?i)e-?mail|poczt\w+ elektroniczn|@',text):return 'e-mail'
+    return ''
 
 def suggest_case(text,questions,existing_refs,day):
     found=re.search(re.escape(REFERENCE_PREFIX)+r'\.\d+\.\d{4}',text)
     received=suggest_received(text,day)
     reference=found.group(0) if found and found.group(0) not in existing_refs else next_reference(existing_refs,received.year)
-    return {'reference':reference,'received':received.isoformat(),'deadline':deadline_for(received).isoformat(),'applicant':suggest_applicant(text),'title':suggest_title(questions,text)}
+    return {'reference':reference,'received':received.isoformat(),'deadline':deadline_for(received).isoformat(),'applicant':suggest_applicant(text),'title':suggest_title(questions,text),'delivery':suggest_delivery(text)}

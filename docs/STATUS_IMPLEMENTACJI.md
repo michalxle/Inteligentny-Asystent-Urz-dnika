@@ -69,3 +69,20 @@ Przegląd na przykładowych materiałach UMB i poprawki:
 - Zmiana jednostek, prowadzącego lub terminu nie unieważnia zatwierdzonego pisma; zmiana treści sprawy nadal tak.
 - Generator: limit czasu w konfiguracji (`OLLAMA_TIMEOUT`, domyślnie 900 s), okno kontekstu dopasowane do objętości materiałów, polski format dat w piśmie, wyrównanie odpowiedzi do kolejności pytań.
 - Import XLSX pomija sprawy już zarejestrowane i zwraca ich listę. Interfejs pozwala oznaczyć dokument jako załącznik do udostępnienia.
+
+## Test w przeglądarce i poprawki — 22.11.2026 (druga runda)
+
+Przejście pełnego scenariusza jury w lokalnej przeglądarce (czysta baza `bootstrap --demo`, pliki z paczki UMB) ujawniło i usunęło:
+
+- Przycisk „Podpowiedz jednostki” wysyłał `GET` do punktu `POST` (405) — podpowiedź w interfejsie nie działała. Słabe dopasowania są odfiltrowane, BKS jako koordynator nie jest przypisywany z archiwum.
+- Jednoczesne pierwsze wczytanie modelu E5 przez dwa żądania kończyło się błędem 500 (PyTorch „meta tensor”). Model jest ładowany pod blokadą i wstępnie przy starcie API; błąd modelu przełącza wyszukiwanie w tryb tekstowy.
+- Jeden worker wykonywał zadania po kolei, więc generowanie pisma (minuty) blokowało odczyt nowo wgranego wniosku. Generowanie ma osobną kolejkę.
+- nginx zapamiętywał adres kontenera API — po jego odtworzeniu interfejs zwracał 502. Dodano resolver Dockera.
+- Formularz nowego wniosku proponuje z dokumentu numer sprawy (kolejny w roku), datę wpływu (pieczęć, nagłówek e-maila), wnioskodawcę, przedmiot i formę udostępnienia oraz pokazuje termin z przesunięciem na dzień roboczy; urzędnik je zatwierdza.
+- Pytania z e-maili: powitanie nie usuwa zdania z pytaniem, nagłówki (Od/Temat/Wysłano) i prośba o odpowiedź na adres nie są pytaniami.
+- Wniosek wgrany do sprawy zaimportowanej wcześniej z kalendarium dołącza się do niej (zamiast błędu „Sygnatura już istnieje”).
+- Generator: model zapisywał liczby z angielskim separatorem (24,518 zamiast 24 518, co po polsku oznacza ułamek); liczby o cyfrach zgodnych ze źródłem są przywracane do zapisu źródła, pozostałe nadal oznaczane do weryfikacji.
+- Telefon na końcu zdania (z kropką) nie był wykrywany. Propozycje na skanach łączyły słowa z sąsiednich wierszy (zamaskowane słowo „Wniosek”); teraz pokazują też wykryty tekst.
+- Historia sprawy pokazuje szczegóły (termin i dni przedłużenia, data i sposób udostępnienia, format eksportu), rejestracja z pliku zapisuje zdarzenie; widoczne przedłużenie terminu; poprawna liczba materiałów i odmiana „strona/strony/stron”; statusy zadań po polsku; wyłączony akt w bazie wiedzy oznaczony jako „Wyłączony”, z tytułem i datą obowiązywania; w pakiecie ZIP nazwa załącznika zamiast identyfikatora.
+- Import XLSX ostrzega o odpowiedzi po terminie. Dane demo nie zawierają już odpowiedzi „wysłanej” rok po terminie.
+- Nowy skrypt `scripts/import_archive.py` wczytuje przykładowe sprawy UMB jako archiwum.

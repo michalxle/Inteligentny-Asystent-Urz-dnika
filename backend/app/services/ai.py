@@ -6,11 +6,19 @@ from pydantic import BaseModel, Field
 from ..config import settings
 from ..models import Chunk, Document, Case, Draft, DraftVersion, uid
 
-@lru_cache(maxsize=1)
+import threading
+_model_lock=threading.Lock()
+_model=None
 def embedding_model():
-    if not (settings.embedding_model/'config.json').exists():raise ValueError('Brak lokalnego modelu wyszukiwania znaczeniowego')
-    from sentence_transformers import SentenceTransformer
-    return SentenceTransformer(str(settings.embedding_model),local_files_only=True,device='cpu')
+    # Równoległe żądania nie mogą wczytywać modelu jednocześnie (PyTorch zgłasza wtedy błąd „meta tensor”).
+    global _model
+    if _model is not None:return _model
+    with _model_lock:
+        if _model is None:
+            if not (settings.embedding_model/'config.json').exists():raise ValueError('Brak lokalnego modelu wyszukiwania znaczeniowego')
+            from sentence_transformers import SentenceTransformer
+            _model=SentenceTransformer(str(settings.embedding_model),local_files_only=True,device='cpu')
+    return _model
 
 def embed(texts,query=False):
     model=embedding_model()
@@ -56,7 +64,7 @@ def search(db,query,case_id=None,all_archive=False):
         top=max(similarity.values(),default=0)
         semantic=[c for c,distance in rows if 1-distance>=settings.semantic_threshold and 1-distance>=top-0.025]
         rankings.append(semantic);mode='hybrid'
-    except (ValueError,ImportError,OSError):warning='Wyszukiwanie tekstowe — lokalny model embeddingowy nie jest gotowy.'
+    except Exception:warning='Wyszukiwanie tekstowe — lokalny model embeddingowy nie jest gotowy.'
     scores={};items={c.id:c for c in chunks}
     for ranking in rankings:
         for rank,c in enumerate(ranking[:30]):scores[c.id]=scores.get(c.id,0)+1/(60+rank+1)

@@ -220,3 +220,13 @@ def test_request_file_attaches_to_case_imported_from_calendar(client, db):
     r = client.post(f"/api/imports/{d.id}/confirm", json={'version': d.version, 'text': 'treść', 'case': body})
     assert r.status_code == 200 and r.json()['case_id'] == c['id']
     assert client.get(f"/api/cases/{c['id']}").json()['case']['questions'][0]['text'] == 'Pytanie z pliku'
+
+
+def test_email_request_greeting_headers_and_delivery():
+    text = ('Od: Karol P\nWysłano: 21 listopada 2026 09:12\nTemat: wniosek\n\nDzień dobry,\nw trybie dostępu do informacji publicznej proszę o informację, jaki był w 2025 r. koszt opieki nad\n'
+            'zwierzętami oraz ile psów trafiło do schroniska.\nProszę o odpowiedź na adres k@example.invalid.\n\nPozdrawiam\nKarol P\n')
+    qs = extract_questions(text)
+    assert len(qs) == 1 and 'koszt opieki' in qs[0]['text']
+    from app.services.domain import suggest_case
+    s = suggest_case(text, qs, set(), date(2026, 11, 22))
+    assert s['delivery'] == 'e-mail' and s['title'].startswith('Jaki był w 2025 r. koszt') and s['applicant'] == 'Karol P'

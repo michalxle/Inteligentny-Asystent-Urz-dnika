@@ -17,6 +17,7 @@ from app.services.documents import extract, digest
 from app.services.domain import extract_questions, deadline_for
 from app.services.ai import index_document
 
+COORDINATOR='BKS'  # Biuro Komunikacji Społecznej koordynuje wnioski i podpisuje odpowiedzi — nie jest jednostką merytoryczną
 KINDS=[('Wniosek','request'),('Odpowied','material'),('Kwerenda','material'),('Doprecyzowanie','material')]
 
 def norm(text):return unicodedata.normalize('NFC',text)
@@ -51,7 +52,7 @@ def run(folder,calendar):
                 if kind=='request' and not c.questions:c.questions=extract_questions(text)
                 if kind=='material':
                     # Jednostki, które przygotowały odpowiedź — źródło archiwalnych podpowiedzi.
-                    c.units=sorted(set(c.units)|{u.id for u in units if u.name.lower() in text.lower()})
+                    c.units=sorted(set(c.units)|{u.id for u in units if u.id!=COORDINATOR and u.name.lower() in text.lower()})
                 print('  ',ref,kind,path.name)
             db.commit();print('zaimportowano',ref,'jednostki:',c.units)
 

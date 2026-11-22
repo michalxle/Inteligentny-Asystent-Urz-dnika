@@ -22,6 +22,16 @@ Pierwsze uruchomienie tworzy konto `admin` z losowym hasłem. Dane są zapisane 
 
 Port PostgreSQL dla tego projektu: `127.0.0.1:55436`. Domyślne hasło bazy w Compose służy wyłącznie lokalnemu środowisku z portem związanym z loopback. Zmiana hasła istniejącej bazy wymaga zmiany hasła w PostgreSQL, nie tylko edycji Compose.
 
+## Archiwum przykładowych spraw UMB
+
+Aby wyszukiwanie podobnych spraw i podpowiedzi jednostek działały na prawdziwych przykładach, zaimportuj materiały organizatora (wnioski, odpowiedzi i kalendarium XLSX). Skrypt tworzy zamknięte sprawy archiwalne, odczytuje i indeksuje dokumenty; plików źródłowych nie zmienia.
+
+```sh
+.venv/bin/python scripts/import_archive.py --dir "Hacknation 2026 - UMB/Przykładowe wnioski i odpowiedzi " --calendar "Hacknation 2026 - UMB/Schemat kalendarium/WNIOSKI O UDOSTĘPNIANIE INFORMACJI PUBLICZNEJ.xlsx"
+```
+
+W wariancie kontenerowym podmontuj katalog z materiałami (np. `-v "$PWD/Hacknation 2026 - UMB:/umb:ro"`) i uruchom ten sam skrypt przez `docker compose ... run --rm api python scripts/import_archive.py --dir ... --calendar ...`.
+
 ## Zasoby AI i OCR
 
 Pobieranie jest jawnie wykonywanym etapem przygotowania, wymagającym Internetu. Praca aplikacji nie uruchamia pobierania modeli.
