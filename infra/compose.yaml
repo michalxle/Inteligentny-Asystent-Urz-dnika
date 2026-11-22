@@ -1,0 +1,40 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: umb
+      POSTGRES_USER: umb
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-umb_local}
+    ports: ["127.0.0.1:55436:5432"]
+    volumes: ["umb_pg:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U umb"]
+      interval: 3s
+      retries: 20
+  api:
+    build: {context: .., dockerfile: infra/backend.Dockerfile}
+    profiles: [full]
+    environment: &env
+      DATABASE_URL: postgresql+psycopg://umb:${POSTGRES_PASSWORD:-umb_local}@db:5432/umb
+      DATA_DIR: /data
+      EMBEDDING_MODEL: /data/models/multilingual-e5-base
+      TESSDATA_PREFIX: /usr/share/tesseract-ocr/5/tessdata
+      OLLAMA_URL: http://host.docker.internal:11434
+    volumes: ["../.data:/data"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    depends_on: {db: {condition: service_healthy}}
+  worker:
+    build: {context: .., dockerfile: infra/backend.Dockerfile}
+    profiles: [full]
+    command: ["python", "-m", "app.worker"]
+    environment: *env
+    volumes: ["../.data:/data"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    depends_on: {db: {condition: service_healthy}}
+  web:
+    build: {context: .., dockerfile: infra/frontend.Dockerfile}
+    profiles: [full]
+    ports: ["127.0.0.1:8080:80"]
+    depends_on: [api]
+volumes:
+  umb_pg:

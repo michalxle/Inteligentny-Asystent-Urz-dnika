@@ -1,0 +1,5 @@
+.git
+.venv
+.data
+frontend/node_modules
+frontend/dist
