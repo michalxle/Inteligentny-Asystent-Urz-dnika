@@ -17,12 +17,14 @@ def execute(job_id):
                 from pathlib import Path
                 text,pages,pdf_path=extract(Path(doc.path))
                 doc.text=text;doc.pages=pages;doc.pdf_path=pdf_path;doc.state='ready'
-                doc.metadata_={**doc.metadata_,'ocr_used':any(p['ocr'] for p in pages),'indexed':False}
+                scores=[p['ocr_confidence'] for p in pages if p.get('ocr_confidence') is not None]
+                low=bool(scores) and min(scores)<60
+                doc.metadata_={**doc.metadata_,'ocr_used':any(p['ocr'] for p in pages),'ocr_confidence':min(scores) if scores else None,'ocr_low_confidence':low,'indexed':False}
                 # Index vectors when available; lexical chunks remain usable before model setup.
                 try:index_document(db,doc);doc.metadata_={**doc.metadata_,'indexed':True}
                 except (ValueError,ImportError,OSError):
                     db.add_all([Chunk(document_id=doc.id,page=p['page'],text=p['text'][:16000]) for p in pages if p['text'].strip()])
-                job.result={'document_id':doc.id,'questions':extract_questions(text),'warning':'Zweryfikuj OCR i metadane przed zatwierdzeniem.'}
+                job.result={'document_id':doc.id,'questions':extract_questions(text),'warning':'Niska pewność OCR (np. pismo odręczne) — przepisz lub popraw treść przed zatwierdzeniem.' if low else 'Zweryfikuj OCR i metadane przed zatwierdzeniem.'}
             elif job.kind=='index':
                 doc=db.get(Document,job.target);index_document(db,doc);doc.metadata_={**doc.metadata_,'indexed':True};job.result={'document_id':doc.id}
             elif job.kind=='draft':
@@ -38,17 +40,23 @@ def execute(job_id):
                 if doc:doc.state='failed'
             job.lease_until=None;db.commit()
 
-def run():
+def run_queue(kinds,heartbeat=False):
+    from .config import settings
     while True:
-        from .config import settings
-        (settings.data_dir/"worker.heartbeat").touch()
+        if heartbeat:(settings.data_dir/"worker.heartbeat").touch()
         with SessionLocal() as db:
-            job=db.scalar(select(Job).where(or_(Job.status=='queued',(Job.status=='running') & (Job.lease_until<now()))).order_by(Job.created).with_for_update(skip_locked=True).limit(1))
+            job=db.scalar(select(Job).where(Job.kind.in_(kinds),or_(Job.status=='queued',(Job.status=='running') & (Job.lease_until<now()))).order_by(Job.created).with_for_update(skip_locked=True).limit(1))
             if job:
                 if job.attempts>=3:job.status='failed';job.result={'error':'Przekroczony limit prób'};db.commit();continue
-                job.status='running';job.attempts+=1;job.lease_until=now()+timedelta(minutes=15);job.progress='Przetwarzanie lokalne';jid=job.id;db.commit()
+                job.status='running';job.attempts+=1;job.lease_until=now()+timedelta(minutes=30 if job.kind=='draft' else 15);job.progress='Przetwarzanie lokalne';jid=job.id;db.commit()
             else:jid=None
         if jid:execute(jid)
         else:time.sleep(1)
+
+def run():
+    # Osobne kolejki: długie generowanie pisma nie blokuje odczytu i indeksowania nowo wgranych dokumentów.
+    import threading
+    threading.Thread(target=run_queue,args=(['draft'],),daemon=True).start()
+    run_queue(['document','index'],heartbeat=True)
 
 if __name__=='__main__':run()

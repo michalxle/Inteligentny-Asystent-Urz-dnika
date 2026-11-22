@@ -38,21 +38,47 @@ def word_to_pdf(path):
         if result.returncode or not converted.exists(): raise ValueError('Konwersja Word do PDF nie powiodła się')
         target=path.with_suffix('.converted.pdf'); shutil.copyfile(converted,target); return target
 
-def ocr_image(image):
-    if not (settings.tessdata_prefix/'pol.traineddata').exists(): raise ValueError('Brak polskiego modelu OCR. Uruchom scripts/setup_models.py')
+def _tesseract(image):
     with tempfile.TemporaryDirectory(dir=settings.data_dir/'tmp') as tmp:
         source=Path(tmp)/'page.png'; image.save(source)
         env={**os.environ,'TESSDATA_PREFIX':str(settings.tessdata_prefix)}
         r=subprocess.run(['tesseract',str(source),'stdout','-l','pol','-c','tessedit_create_tsv=1'],capture_output=True,timeout=90,env=env)
         if r.returncode: raise ValueError('Błąd lokalnego OCR')
         words=[]; lines={}
-        for row in csv.DictReader(io.StringIO(r.stdout.decode('utf-8')),delimiter='\t'):
+        # TSV Tesseracta nie używa cudzysłowów — cudzysłów w rozpoznanym wyrazie nie może łączyć wierszy.
+        for row in csv.DictReader(io.StringIO(r.stdout.decode("utf-8")),delimiter="\t",quoting=csv.QUOTE_NONE):
             text=(row.get('text') or '').strip()
             if not text:continue
             left,top,width,height=[int(row[k]) for k in ['left','top','width','height']]
-            words.append({'text':text,'box':[left/image.width,top/image.height,(left+width)/image.width,(top+height)/image.height]})
+            try:conf=float(row.get('conf') or 0)
+            except ValueError:conf=0.0
+            words.append({'text':text,'conf':round(conf,1),'box':[left/image.width,top/image.height,(left+width)/image.width,(top+height)/image.height]})
             key=tuple(row[k] for k in ['block_num','par_num','line_num']);lines.setdefault(key,[]).append(text)
-        return '\n'.join(' '.join(v) for v in lines.values()),words
+        confidence=sum(w['conf'] for w in words)/len(words) if words else 0.0
+        return '\n'.join(' '.join(v) for v in lines.values()),words,confidence
+
+def remove_grid(image):
+    """Usuwa linie papieru w kratkę/liniowanego, które zakłócają OCR pisma odręcznego."""
+    import numpy as np
+    gray=np.array(image.convert('L'))
+    dark=gray<170
+    cleaned=gray.copy()
+    cleaned[dark.mean(axis=1)>0.3,:]=255
+    cleaned[:,dark.mean(axis=0)>0.3]=255
+    cleaned=np.where(cleaned<170,0,255).astype('uint8')
+    from PIL import Image
+    return Image.fromarray(cleaned)
+
+def ocr_image(image):
+    if not (settings.tessdata_prefix/'pol.traineddata').exists(): raise ValueError('Brak polskiego modelu OCR. Uruchom scripts/setup_models.py')
+    text,words,confidence=_tesseract(image)
+    if confidence<60:
+        # Druga próba po usunięciu siatki; wybieramy odczyt o wyższej pewności.
+        try:
+            second=_tesseract(remove_grid(image))
+            if second[2]>confidence:text,words,confidence=second
+        except Exception:pass
+    return text,words
 
 @pdf_serialized
 def extract(path):
@@ -70,7 +96,8 @@ def extract(path):
                 text=page.extract_text() or ''; words=[]; ocr=False
                 if len(text.strip())<30:
                     rendered=doc[i].render(scale=2).to_pil();text,words=ocr_image(rendered);ocr=True
-                pages.append({'page':i+1,'text':text,'words':words,'ocr':ocr})
+                confidence=round(sum(w.get('conf',0) for w in words)/len(words),1) if words else None
+                pages.append({'page':i+1,'text':text,'words':words,'ocr':ocr,'ocr_confidence':confidence})
     return '\n\n'.join(p['text'] for p in pages),pages,str(pdf_path) if pdf_path else None
 
 @pdf_serialized

@@ -23,5 +23,6 @@ def preview(data):
             warnings.append('Termin opisowy lub niepoprawny — potwierdź datę i historię powiadomień')
         if due and rec and due<rec:warnings.append('Termin wcześniejszy od wpływu')
         if ans and rec and ans<rec:warnings.append('Odpowiedź wcześniejsza od wpływu')
+        elif ans and due and ans>due:warnings.append('Odpowiedź po terminie — sprawdź, czy przedłużono termin (kwerenda) i odnotuj to w sprawie')
         rows.append({'reference':str(ref),'title':str(title or ''),'applicant':str(applicant or ''),'received':rec,'deadline':due,'answered':ans,'owner':str(owner or ''),'questions':[],'delivery':'','warnings':warnings,'source_deadline':str(deadline)})
     wb.close();return {'rows':rows,'note':'Wszystkie rekordy wymagają weryfikacji. Oryginalne pliki pozostają niezmienione.'}

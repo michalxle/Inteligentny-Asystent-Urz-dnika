@@ -20,6 +20,8 @@ services:
       EMBEDDING_MODEL: /data/models/multilingual-e5-base
       TESSDATA_PREFIX: /usr/share/tesseract-ocr/5/tessdata
       OLLAMA_URL: http://host.docker.internal:11434
+      OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-900}
+      OLLAMA_NUM_THREAD: ${OLLAMA_NUM_THREAD:-0}
     volumes: ["../.data:/data"]
     extra_hosts: ["host.docker.internal:host-gateway"]
     depends_on: {db: {condition: service_healthy}}

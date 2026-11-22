@@ -14,12 +14,28 @@ from .config import settings
 from .db import get_db
 from .models import User, Session, Case, Unit, Document, Draft, DraftVersion, Event, Job, AttachmentReview, Export, Chunk, uid, now
 from .auth import current_user, require_admin, hasher, token_hash
-from .services.domain import today, deadline_for, deadline_state, add_months, extract_questions, find_pii, clean_text, STATUSES
+from .services.domain import today, deadline_for, deadline_state, add_months, format_date, extract_questions, detect_pii, merge_redactions, STOPWORDS, remap_redactions, clean_text, suggest_case, STATUSES
 from .services.documents import ALLOWED, digest, render_page, raster_redact, export_letter
 from .services.ai import search
 
 app=FastAPI(title='Inteligentny Asystent Urzędnika',version='0.1.0')
 login_attempts={}
+
+@app.on_event('startup')
+def preload_models():
+    # Pierwsze wczytanie polskiego NER trwa kilkadziesiąt sekund; nie może blokować zapisu pisma.
+    import threading
+    def load():
+        for loader in ('ner','embeddings'):
+            try:
+                if loader=='ner':
+                    from .services.ner import nlp
+                    nlp()
+                else:
+                    from .services.ai import embedding_model
+                    embedding_model()
+            except Exception:pass
+    threading.Thread(target=load,daemon=True).start()
 
 class Strict(BaseModel):model_config=ConfigDict(extra='forbid')
 class Login(Strict):username:str; password:str
@@ -166,15 +182,23 @@ def edit_case(ident:str,body:CasePatch,user=Depends(current_user),db:DBSession=D
         if not automatic and body.received>c.deadline:raise HTTPException(422,'Data wpływu nie może być późniejsza niż odnotowany termin')
         c.original_deadline=deadline_for(body.received)
         if automatic:c.deadline=c.original_deadline
-    for key,value in body.model_dump(exclude={'version'}).items():setattr(c,key,value)
-    c.version+=1
+    content={'reference','title','applicant','received','questions'}
+    new=body.model_dump(exclude={'version'})
+    changed=any((getattr(c,k) if k!='questions' else [{'id':q['id'],'text':q['text']} for q in c.questions])!=(new[k] if k!='questions' else [{'id':q['id'],'text':q['text']} for q in new[k]]) for k in content)
+    for key,value in new.items():setattr(c,key,value)
+    old_version=c.version;c.version+=1
+    if not changed:
+        # Prowadzący, jednostki i forma udostępnienia nie zmieniają treści zatwierdzonego pisma.
+        for d in db.scalars(select(Draft).where(Draft.case_id==ident,Draft.case_version==old_version)):d.case_version=c.version
     if c.answered:c.status='zakonczony'
-    elif c.status=='gotowy_do_eksportu':c.status='projekt_odpowiedzi'
+    elif changed and c.status=='gotowy_do_eksportu':c.status='projekt_odpowiedzi'
     log(db,user,ident,'case_updated');db.commit();return case_dict(c)
 @app.post('/api/cases/{ident}/events')
 def event(ident:str,body:Note,user=Depends(current_user),db:DBSession=Depends(get_db)):
     c=obj(db,Case,ident,True)
-    if body.type=='material_requested':c.status='oczekuje_na_materialy'
+    # Zakończonej sprawy notatka nie otwiera ponownie.
+    if not c.answered and body.type=='material_requested' and c.status in ['do_weryfikacji','zarejestrowany','oczekuje_na_materialy']:c.status='oczekuje_na_materialy'
+    if not c.answered and body.type=='query' and c.status not in ['gotowy_do_eksportu']:c.status='kwerenda'
     log(db,user,ident,body.type,{'text':body.text});db.commit();return {'ok':True}
 @app.post('/api/cases/{ident}/deadline-events')
 def deadline(ident:str,body:Deadline,user=Depends(current_user),db:DBSession=Depends(get_db)):
@@ -182,7 +206,12 @@ def deadline(ident:str,body:Deadline,user=Depends(current_user),db:DBSession=Dep
     if body.deadline<c.received or body.deadline>add_months(c.received,2):raise HTTPException(422,'Termin poza zakresem od wpływu do dwóch miesięcy')
     if body.notified_on>today() or body.notified_on<c.received:raise HTTPException(422,'Sprawdź datę powiadomienia')
     if body.notified_on>c.deadline:raise HTTPException(422,'Powiadomienie po dotychczasowym terminie — wymaga wyjaśnienia poza tym trybem')
-    log(db,user,ident,'deadline_changed',{'old':c.deadline.isoformat(),**body.model_dump(mode='json')});c.deadline=body.deadline;c.version+=1;db.commit();return case_dict(c)
+    log(db,user,ident,'deadline_changed',{'old':c.deadline.isoformat(),'extension_days':(body.deadline-c.original_deadline).days,**body.model_dump(mode='json')})
+    old_version=c.version;c.deadline=body.deadline;c.version+=1
+    # Termin nie wpływa na treść pisma — aktualne projekty pozostają zgodne ze sprawą.
+    for d in db.scalars(select(Draft).where(Draft.case_id==ident,Draft.case_version==old_version)):d.case_version=c.version
+    if not c.answered and body.deadline>c.original_deadline and c.status in ['do_weryfikacji','zarejestrowany','oczekuje_na_materialy']:c.status='kwerenda'
+    db.commit();return case_dict(c)
 @app.post('/api/cases/{ident}/sent')
 def sent(ident:str,body:Sent,user=Depends(current_user),db:DBSession=Depends(get_db)):
     c=obj(db,Case,ident,True);revision(c,body.version)
@@ -193,13 +222,27 @@ def sent(ident:str,body:Sent,user=Depends(current_user),db:DBSession=Depends(get
     c.answered=body.answered;c.delivery=body.delivery;c.status='zakonczony';c.version+=1;log(db,user,ident,'manually_marked_sent',body.model_dump(mode='json'));db.commit();return case_dict(c)
 @app.get('/api/units')
 def units(user=Depends(current_user),db:DBSession=Depends(get_db)):return [{'id':u.id,'name':u.name,'description':u.description,'source':u.source} for u in db.scalars(select(Unit)).all()]
+STOP=STOPWORDS
+def _terms(text):return {w.lower() for w in re.findall(r'[^\W\d_]{4,}',text)}-STOP
 @app.post('/api/cases/{ident}/unit-suggestions')
 def unit_suggestions(ident:str,user=Depends(current_user),db:DBSession=Depends(get_db)):
-    c=obj(db,Case,ident);terms=set(re.findall(r'\w{4,}',c.title+' '+' '.join(q['text'] for q in c.questions)))
-    result=[]
+    c=obj(db,Case,ident);query=c.title+' '+' '.join(q['text'] for q in c.questions);terms=_terms(query)
+    scores={};reasons={}
     for u in db.scalars(select(Unit)).all():
-        matches=[w for w in terms if w.lower()[:5] in u.description.lower()]
-        if matches:result.append({'id':u.id,'name':u.name,'reason':'Kompetencje: '+', '.join(matches),'score':len(matches)})
+        vocabulary={w.lower() for w in re.findall(r'[^\W\d_]{4,}',u.name+' '+u.description)}
+        # Dopasowanie rdzenia: wspólny przedrostek co najmniej 5 liter (odmiana polskich wyrazów).
+        matches=sorted({w for w in terms if any(len(v)>=5 and len(w)>=5 and (w[:max(5,min(len(w),len(v))-3)]==v[:max(5,min(len(w),len(v))-3)]) for v in vocabulary)})
+        if matches:scores[u.id]=len(matches);reasons[u.id]=['kompetencje: '+', '.join(matches[:6])]
+    # Archiwalne przypisania: jednostki, które odpowiadały w podobnych sprawach.
+    for r in search(db,query,ident,True)['results'][:5]:
+        if not r['case_id']:continue
+        past=db.get(Case,r['case_id'])
+        for u in set(past.units or [])|({r['unit_id']} if r['unit_id'] else set()):
+            scores[u]=scores.get(u,0)+1.5;reasons.setdefault(u,[]).append('podobna sprawa '+past.reference)
+    units={u.id:u for u in db.scalars(select(Unit)).all()}
+    top=max(scores.values(),default=0)
+    # Słabe dopasowania (pojedyncze słowo przy wyraźnie lepszej propozycji) tylko zaciemniają wybór.
+    result=[{'id':k,'name':units[k].name,'reason':(lambda t:t[:1].upper()+t[1:])('; '.join(dict.fromkeys(reasons[k]))),'score':round(v,1)} for k,v in scores.items() if k in units and v>=max(1,top*0.4)]
     return sorted(result,key=lambda r:r['score'],reverse=True)[:4]
 @app.get('/api/cases/{ident}/similar')
 def similar(ident:str,all_archive:bool=False,user=Depends(current_user),db:DBSession=Depends(get_db)):
@@ -224,6 +267,10 @@ async def upload_file(file,kind,case_id,unit_id,db,user):
     if kind!='request':duplicate_query=duplicate_query.where(Document.case_id==case_id)
     # Prefer a registered request to an abandoned upload of the same file.
     existing=db.scalar(duplicate_query.order_by(Document.case_id.is_(None),Document.created).limit(1))
+    if existing and existing.state=='failed':
+        # Ponowna próba odczytu tego samego pliku (np. po naprawie OCR) zamiast trwałej blokady.
+        existing.state='queued';existing.name=name;job=enqueue(db,'document',existing.id);log(db,user,existing.case_id,'document_retry',{'document_id':existing.id});db.commit()
+        return {'document':doc_dict(existing),'job':job_dict(job),'duplicate':False}
     if existing:return {'document':doc_dict(existing),'job':None,'duplicate':True}
     ident=uid();path=settings.data_dir/'files'/(ident+suffix);path.write_bytes(content)
     d=Document(id=ident,case_id=case_id,unit_id=unit_id,name=name,kind=kind,path=str(path),sha256=sha)
@@ -235,7 +282,13 @@ async def imports(file:UploadFile=File(...),user=Depends(current_user),db:DBSess
 @app.get('/api/imports/{ident}')
 def get_import(ident:str,user=Depends(current_user),db:DBSession=Depends(get_db)):
     d=obj(db,Document,ident);jobs=db.scalars(select(Job).where(Job.target==ident).order_by(Job.created.desc())).all()
-    return {'document':doc_dict(d),'questions':extract_questions(d.text),'jobs':[job_dict(j) for j in jobs]}
+    questions=extract_questions(d.text)
+    # Propozycja danych do rejestru — urzędnik sprawdza i akceptuje je w formularzu.
+    suggested=suggest_case(d.text,questions,set(db.scalars(select(Case.reference)).all()),today()) if d.state=='ready' else None
+    return {'document':doc_dict(d),'questions':questions,'jobs':[job_dict(j) for j in jobs],'suggested':suggested}
+@app.get('/api/deadline-preview')
+def deadline_preview(received:date,user=Depends(current_user)):
+    return {'deadline':deadline_for(received).isoformat()}
 @app.post('/api/imports/{ident}/confirm')
 def confirm(ident:str,body:Confirm,user=Depends(current_user),db:DBSession=Depends(get_db)):
     d=obj(db,Document,ident,True);revision(d,body.version)
@@ -244,11 +297,18 @@ def confirm(ident:str,body:Confirm,user=Depends(current_user),db:DBSession=Depen
     if d.kind=='request' and d.case_id and body.case:raise HTTPException(409,'Ten wniosek jest już przypisany do sprawy. Otwórz istniejącą sprawę.')
     if d.case_id is None and d.kind=='request':
         if not body.case:raise HTTPException(422,'Uzupełnij dane sprawy')
-        if db.scalar(select(Case).where(Case.reference==body.case.reference)):raise HTTPException(409,'Sygnatura już istnieje')
-        c=Case(**body.case.model_dump(exclude={'questions'}),questions=[q.model_dump() for q in body.case.questions],original_deadline=deadline_for(body.case.received),deadline=deadline_for(body.case.received));db.add(c);db.flush();d.case_id=c.id
+        existing_case=db.scalar(select(Case).where(Case.reference==body.case.reference))
+        if existing_case:
+            # Sprawa z kalendarium bez pliku wniosku: dołączamy wniosek zamiast odrzucać rejestrację.
+            if db.scalar(select(Document.id).where(Document.case_id==existing_case.id,Document.kind=='request').limit(1)):raise HTTPException(409,'Sygnatura już istnieje i ma przypisany wniosek')
+            d.case_id=existing_case.id
+            if not existing_case.questions:existing_case.questions=[q.model_dump() for q in body.case.questions]
+            log(db,user,existing_case.id,'request_attached',{'document_id':d.id})
+        else:
+            c=Case(**body.case.model_dump(exclude={'questions'}),questions=[q.model_dump() for q in body.case.questions],original_deadline=deadline_for(body.case.received),deadline=deadline_for(body.case.received));db.add(c);db.flush();d.case_id=c.id;log(db,user,c.id,'case_created',{'document_id':d.id})
     if d.case_id:
         c=obj(db,Case,d.case_id,True);c.version+=1
-    d.text=body.text;d.version+=1;d.metadata_={**d.metadata_,**body.metadata};d.active=True
+    d.text=body.text;d.version+=1;d.metadata_={k:v for k,v in {**d.metadata_,**body.metadata}.items() if k!='deactivated'};d.active=True
     # Corrected transcription is indexed, while page images and their locations remain original.
     d.pages=[{k:v for k,v in p.items() if k!='index_text'} for p in d.pages]
     if body.text!='\n\n'.join(p['text'] for p in d.pages):d.pages=[{**p,'index_text':body.text if i==0 else ''} for i,p in enumerate(d.pages)]
@@ -268,7 +328,7 @@ def activate(ident:str,body:Confirm,user=Depends(require_admin),db:DBSession=Dep
 def deactivate(ident:str,user=Depends(require_admin),db:DBSession=Depends(get_db)):
     d=obj(db,Document,ident,True)
     if d.kind!='knowledge':raise HTTPException(422,'To nie jest dokument wiedzy')
-    d.active=False;d.version+=1;log(db,user,None,'knowledge_deactivated',{'id':ident});db.commit();return doc_dict(d)
+    d.active=False;d.version+=1;d.metadata_={**d.metadata_,'deactivated':today().isoformat()};log(db,user,None,'knowledge_deactivated',{'id':ident});db.commit();return doc_dict(d)
 @app.get('/api/jobs/{ident}')
 def job(ident:str,user=Depends(current_user),db:DBSession=Depends(get_db)):return job_dict(obj(db,Job,ident))
 @app.get('/api/jobs')
@@ -281,24 +341,24 @@ def generate_draft(ident:str,user=Depends(current_user),db:DBSession=Depends(get
     j=enqueue(db,'draft',ident);db.commit();return job_dict(j)
 @app.post('/api/cases/{ident}/manual-drafts',status_code=201)
 def manual_draft(ident:str,user=Depends(current_user),db:DBSession=Depends(get_db)):
-    c=obj(db,Case,ident);d=Draft(case_id=ident,case_version=c.version,text=f'{c.reference}\n\nSzanowni Państwo,\n\n'+'\n\n'.join(f'Ad {i+1}. [Do uzupełnienia: {q["text"]}]' for i,q in enumerate(c.questions)),coverage=[{'question_id':q['id'],'source_ids':[],'missing':['Brak odpowiedzi'],'reviewed':False} for q in c.questions]);db.add(d);db.flush();db.add(DraftVersion(draft_id=d.id,version=1,text=d.text,redactions=[],author=user.username));log(db,user,ident,'manual_draft_created');db.commit();return draft_dict(d)
+    c=obj(db,Case,ident);d=Draft(case_id=ident,case_version=c.version,text=f'Bydgoszcz, {format_date(today())}\nZnak sprawy: {c.reference}\n\nSzanowni Państwo,\n\nw odpowiedzi na wniosek z dnia {format_date(c.received)} o udostępnienie informacji publicznej przedstawiam poniższe informacje.\n\n'+'\n\n'.join(f'Ad {i+1}. [Do uzupełnienia: {q["text"]}]' for i,q in enumerate(c.questions))+'\n\nZ poważaniem\n[miejsce na podpis upoważnionej osoby]',coverage=[{'question_id':q['id'],'source_ids':[],'missing':['Brak odpowiedzi'],'reviewed':False} for q in c.questions])
+    d.redactions=detect_pii(d.text)
+    db.add(d);db.flush();db.add(DraftVersion(draft_id=d.id,version=1,text=d.text,redactions=d.redactions,author=user.username));log(db,user,ident,'manual_draft_created');db.commit();return draft_dict(d)
 @app.patch('/api/drafts/{ident}')
 def save_draft(ident:str,body:DraftPatch,user=Depends(current_user),db:DBSession=Depends(get_db)):
     d=obj(db,Draft,ident,True);revision(d,body.version);c=obj(db,Case,d.case_id)
     expected={q['id'] for q in c.questions}
     if {a.get('question_id') for a in body.coverage}!=expected:raise HTTPException(422,'Sprawdź pokrycie wszystkich pytań')
-    d.text=body.text;d.coverage=body.coverage;d.redactions=[];d.version+=1;d.approved_version=None;d.case_version=c.version
-    db.add(DraftVersion(draft_id=d.id,version=d.version,text=d.text,redactions=[],author=user.username));c.status='zakonczony' if c.answered else 'projekt_odpowiedzi';log(db,user,c.id,'draft_edited',{'id':ident,'version':d.version});db.commit();return draft_dict(d)
+    # Decyzje anonimizacji przechodzą na poprawioną treść; nowe fragmenty są automatycznie proponowane do oceny.
+    kept=remap_redactions(d.text,body.text,d.redactions)
+    d.redactions=merge_redactions(body.text,kept,detect_pii(body.text,kept))
+    d.text=body.text;d.coverage=body.coverage;d.version+=1;d.approved_version=None;d.case_version=c.version
+    db.add(DraftVersion(draft_id=d.id,version=d.version,text=d.text,redactions=d.redactions,author=user.username));c.status='zakonczony' if c.answered else 'projekt_odpowiedzi';log(db,user,c.id,'draft_edited',{'id':ident,'version':d.version});db.commit();return draft_dict(d)
 @app.post('/api/drafts/{ident}/redaction-scan')
 def redaction_scan(ident:str,user=Depends(current_user),db:DBSession=Depends(get_db)):
-    d=obj(db,Draft,ident,True);detected=find_pii(d.text)
-    try:
-        from .services.ner import ner_spans
-        detected+=ner_spans(d.text,detected)
-    except (ImportError,OSError):pass
+    d=obj(db,Draft,ident,True)
     # A rescan must preserve manual masks and previous decisions on the same text.
-    existing={(r['start'],r['end']) for r in d.redactions}
-    d.redactions=sorted(d.redactions+[r for r in detected if (r['start'],r['end']) not in existing],key=lambda r:r['start'])
+    d.redactions=merge_redactions(d.text,d.redactions,detect_pii(d.text,d.redactions))
     d.version+=1;d.approved_version=None;db.commit();return draft_dict(d)
 @app.patch('/api/drafts/{ident}/redactions')
 def redactions(ident:str,body:Spans,user=Depends(current_user),db:DBSession=Depends(get_db)):
@@ -334,6 +394,30 @@ def document_review(ident:str,user=Depends(current_user),db:DBSession=Depends(ge
     d=obj(db,Document,ident)
     review=db.get(AttachmentReview,ident)
     return {'document':doc_dict(d),'review':{'version':review.version if review else 0,'masks':review.masks if review else [],'reviewed_pages':review.reviewed_pages if review else []},'pages':[{'page':p['page'],'text':p['text'],'words':p['words'],'ocr':p['ocr']} for p in d.pages],'exports':[{'id':e.id,'approved':e.approved,'version':e.version,'current':bool(review and review.document_version==d.version and e.version==review.version),'url':'/api/exports/'+e.id} for e in db.scalars(select(Export).where(Export.document_id==ident).order_by(Export.created.desc())).all()]}
+@app.get('/api/documents/{ident}/pages/{page}/proposals')
+def page_proposals(ident:str,page:int,user=Depends(current_user),db:DBSession=Depends(get_db)):
+    """Propozycje obszarów do zamaskowania na skanie: reguły i NER na słowach OCR z położeniem."""
+    d=obj(db,Document,ident)
+    if page<1 or page>len(d.pages):raise HTTPException(404,'Brak strony')
+    words=d.pages[page-1].get('words') or []
+    if not words:return {'masks':[],'ocr':False}
+    joined='';positions=[];previous=None
+    for w in words:
+        # Nowa linia OCR = znak nowej linii; reguły nie łączą danych z sąsiednich wierszy.
+        if previous and w['box'][1]>=previous[3]-0.002:joined=joined.rstrip(' ')+'\n'
+        start=len(joined);joined+=w['text']+' ';positions.append((start,len(joined)-1,w['box']));previous=w['box']
+    masks=[]
+    for r in detect_pii(joined):
+        boxes=[box for start,end,box in positions if start<r['end'] and end>r['start']]
+        # Wyrazy w jednym wierszu łączymy w jeden prostokąt.
+        lines=[]
+        for box in boxes:
+            line=next((l for l in lines if abs(l[1]-box[1])<0.01 and abs(l[3]-box[3])<0.01),None)
+            if line:line[0]=min(line[0],box[0]);line[2]=max(line[2],box[2])
+            else:lines.append(list(box))
+        fragment=joined[r['start']:r['end']].replace('\n',' ')
+        masks+=[{'page':page,'box':[max(0,b[0]-0.003),max(0,b[1]-0.003),min(1,b[2]+0.003),min(1,b[3]+0.003)],'state':'proposed','category':f"OCR: {r['category']} · {fragment[:60]}"} for b in lines]
+    return {'masks':masks,'ocr':True}
 @app.patch('/api/documents/{ident}/redactions')
 def masks(ident:str,body:Review,user=Depends(current_user),db:DBSession=Depends(get_db)):
     d=obj(db,Document,ident,True)
@@ -410,8 +494,12 @@ class CalendarApply(Strict):rows:list[CalendarRow]=Field(max_length=1000);confir
 def calendar_apply(body:CalendarApply,user=Depends(require_admin),db:DBSession=Depends(get_db)):
     if not body.confirmed:raise HTTPException(422,'Potwierdź weryfikację danych importu')
     for row in body.rows:
-        if row.deadline<row.received or row.answered and row.answered<row.received:raise HTTPException(422,'Popraw daty wcześniejsze niż wpływ')
-        if db.scalar(select(Case).where(Case.reference==row.reference)):raise HTTPException(409,'Istniejąca sygnatura: '+row.reference)
+        if row.deadline<row.received or row.answered and row.answered<row.received:raise HTTPException(422,'Popraw daty wcześniejsze niż wpływ: '+row.reference)
+    if len({r.reference for r in body.rows})!=len(body.rows):raise HTTPException(422,'Sygnatury w arkuszu powtarzają się')
+    skipped=[]
+    for row in body.rows:
+        # Sprawy już zarejestrowane pomijamy zamiast blokować cały import.
+        if db.scalar(select(Case).where(Case.reference==row.reference)):skipped.append(row.reference);continue
         c=Case(**row.model_dump(exclude={'questions'}),questions=[q.model_dump() for q in row.questions],original_deadline=deadline_for(row.received),status='zakonczony' if row.answered else 'zarejestrowany')
         db.add(c);db.flush();log(db,user,c.id,'calendar_imported',{'warnings':row.warnings})
-    db.commit();return {'count':len(body.rows)}
+    db.commit();return {'count':len(body.rows)-len(skipped),'skipped':skipped}

@@ -11,7 +11,7 @@ Wersja 0.1 obejmuje lokalny prototyp aplikacji. Poniższe ograniczenia należy u
 - Import kalendarium XLSX z podglądem i ostrzeżeniami o datach; oryginał pozostaje niezmieniony.
 - Baza wiedzy z aktywacją/dezaktywacją i metadanymi; lokalne indeksowanie dokumentów.
 - Wyszukiwanie tekstowe i wektorowe z RRF oraz przełącznikiem okresu archiwum. Brak modelu E5 jest jawnie sygnalizowany jako tryb tekstowy.
-- Słownik jednostek i podpowiedzi na podstawie kompetencji. W obecnej wersji ranking jednostek jest regułowy; nie jest klasyfikatorem LLM.
+- Katalog 29 jednostek UMB (wydziały i biura z BIP) z opisem kompetencji do weryfikacji przy wdrożeniu. Podpowiedź łączy dopasowanie kompetencji z jednostkami przypisanymi do podobnych spraw z archiwum; decyzję podejmuje operator.
 - Projekt odpowiedzi przez lokalny Bielik w JSON, wskazanie bieżących źródeł, kontrola liczbowych dopisków, lista braków, ręczna korekta i zatwierdzenie wersji.
 - Reguły PII i lokalny NER; decyzje o zakresach tekstu oraz ręczne dodanie fragmentu do usunięcia.
 - Eksport pisma TXT, DOCX, PDF i DOC; anonimizacja załączników PDF i skanów przez odtworzenie obrazów po usunięciu pikseli; zatwierdzenie wynikowej kopii i pobranie ZIP.
@@ -21,10 +21,10 @@ Wersja 0.1 obejmuje lokalny prototyp aplikacji. Poniższe ograniczenia należy u
 
 - Pytania, przypisania jednostek i pokrycie odpowiedzi są zapisane w JSON rekordów, a nie w pełni znormalizowanych tabelach wymienionych w docelowym modelu README. API izoluje tę decyzję od interfejsu; dalsza normalizacja wymaga kolejnej migracji.
 - Wersja dokumentu i historia zatwierdzeń są zachowywane, lecz nie ma jeszcze osobnego interfejsu porównywania wszystkich wcześniejszych transkrypcji. Nie zmieniaj zatwierdzonych źródeł w celu zastępowania ustawy nowym brzmieniem; wgraj nowy dokument i wyłącz poprzedni.
-- Domyślny termin jest propozycją 14 dni kalendarzowych. Nie wdrożono automatycznego przesuwania o soboty i święta; datę oraz podstawę zmiany zatwierdza operator. Reguły prawne terminów wymagają odbioru merytorycznego przez urząd.
+- Domyślny termin to 14 dni od wpływu; koniec terminu w sobotę, niedzielę lub dzień ustawowo wolny przesuwa się na najbliższy dzień roboczy (art. 57 § 4 KPA). Przedłużenie (art. 13 ust. 2 UDIP) odnotowuje operator; sprawa otrzymuje etap „Kwerenda +N dni”. Reguły prawne terminów wymagają odbioru merytorycznego przez urząd.
 - Generator bazuje na bieżących materiałach sprawy. Baza wiedzy jest przeszukiwalna, ale nie służy automatycznemu doborowi przepisów ani wydawaniu decyzji prawnych. Zawiadomienia proceduralne przygotowuje się jako szkic ręczny.
 - Dopasowanie odpowiedzi do wszystkich żądań i rozróżnienie np. planu od kosztu są pomocą AI oraz kontrolą człowieka, nie zweryfikowanym automatycznym rozstrzygnięciem.
-- OCR pisma ręcznego może być niepełny; dostępna jest korekta tekstu. Automatyczne propozycje obszarów na skanie obejmują podstawowe identyfikatory; podpisy i obrazy zaznacza operator.
+- OCR pisma ręcznego jest niskiej jakości (Tesseract); przy niskiej pewności system ponawia odczyt po usunięciu linii papieru w kratkę i oznacza dokument jako wymagający przepisania. Propozycje obszarów na skanie obejmują reguły (e-mail, PESEL, telefon, adres, dokumenty) i NER na słowach OCR; podpisy i wizerunki zaznacza operator.
 - Kopie załączników PDF są obrazowe, bez warstwy tekstowej i podpisu cyfrowego. Trwałe usunięcie dotyczy zaznaczonych obszarów; kompletność wyboru wymaga przejrzenia wszystkich stron.
 - Starszy DOC wymaga działającego LibreOffice. Katalog jednostek jest zbiorem startowym na podstawie przykładów, a nie kompletną, zatwierdzoną mapą aktualnych kompetencji.
 - Schemat początkowy jest zamrożony w migracji 0001. Dalsze zmiany wymagają kolejnych migracji.
@@ -34,7 +34,7 @@ Film i prezentacja konkursowa są osobnymi materiałami do wykonania zgodnie ze 
 
 ## Wykonana weryfikacja
 
-- 20 testów backendu przeszło: sesje/CSRF, role, wersjonowanie, terminy, import i eksport, usuwanie tekstu oraz pikseli PDF i obrót stron.
+- 35 testów backendu przeszło (w tym 15 testów regresji z przeglądu zgodności z wyzwaniem) oraz 5 testów interfejsu.
 - Trzy testy interfejsu sprawdzają współrzędne zaznaczeń Unicode oraz rok wpływu w rejestrze. Kompilacja TypeScript/Vite przeszła.
 - Lokalny Bielik przygotował odpowiedź 120/132 uczniów na podstawie jednego syntetycznego źródła; czas jednego testu około 18 sekund. To test działania, a nie porównanie modeli ani pomiar jakości na całym archiwum.
 - Potwierdzono gotowość lokalnych usług i wyszukiwanie w trybie hybrydowym.
@@ -53,3 +53,36 @@ Film i prezentacja konkursowa są osobnymi materiałami do wykonania zgodnie ze 
 - Po ponownym otwarciu załącznika wraca aktualna kopia PDF i stan jej zatwierdzenia. Kopie starszych wersji przeglądu nie są przywracane jako aktualne.
 - Odnotowanie wysyłki nie unieważnia aktualnego pisma. Praca z odpowiedzią po zamknięciu nie zmienia sprawy ponownie w otwartą.
 - Poprawiono ponowne tworzenie korzenia React podczas aktualizacji kodu przez Vite, opisy przycisków nawigacji i pusty stan bazy wiedzy.
+
+
+## Poprawki zgodności z wyzwaniem — 22.11.2026
+
+Przegląd na przykładowych materiałach UMB i poprawki:
+
+- OCR: parser TSV Tesseracta nie łączy już wierszy przy cudzysłowie w rozpoznanym wyrazie (wcześniej treść skanu 16.2026 zawierała surowe wiersze TSV). Dodano pewność odczytu i drugą próbę po usunięciu siatki.
+- Pytania z wniosku: wiersze zawinięte przez układ strony są scalane w akapity; obsługa numeracji w jednym akapicie, list po dwukropku i zdań z prośbą. Akapit po ostatnim punkcie nie jest doklejany do pytania.
+- Ponowne wgranie pliku, którego odczyt się nie powiódł, wznawia przetwarzanie zamiast zwracać trwale błędny dokument.
+- Anonimizacja pisma: propozycje powstają automatycznie przy każdym utworzeniu i zapisie pisma; zatwierdzenie wymaga rozpatrzenia wszystkich. Decyzje przechodzą na poprawioną treść. Podgląd pisma: szare — propozycja, czarne — do usunięcia. Rozszerzone reguły (telefon, dokument tożsamości, NIP, adresy, kod pocztowy, data urodzenia, nr rejestracyjny, księga wieczysta); NER proponuje wyłącznie osoby.
+- Etapy: brak działań, zapytania wysłane do wydziałów, kwerenda (+N dni), odpowiedź w przygotowaniu, odpowiedź przygotowana, odpowiedź wysłana. Notatka nie otwiera ponownie zakończonej sprawy.
+- Rejestr i kalendarium: kolor wiersza i wpisu w kalendarzu dla spraw po terminie, z terminem dziś i jutro; legenda; kolumny Lp. i data odpowiedzi, inicjały prowadzącego, oznaczenie odpowiedzi po terminie.
+- Podobne sprawy: okno „ostatni rok” obejmuje także sprawy z tego samego dnia; wyniki niezwiązane tematycznie są odcinane (wspólne rdzenie wyrazów lub podobieństwo znaczeniowe bliskie najlepszemu wynikowi).
+- Zmiana jednostek, prowadzącego lub terminu nie unieważnia zatwierdzonego pisma; zmiana treści sprawy nadal tak.
+- Generator: limit czasu w konfiguracji (`OLLAMA_TIMEOUT`, domyślnie 900 s), okno kontekstu dopasowane do objętości materiałów, polski format dat w piśmie, wyrównanie odpowiedzi do kolejności pytań.
+- Import XLSX pomija sprawy już zarejestrowane i zwraca ich listę. Interfejs pozwala oznaczyć dokument jako załącznik do udostępnienia.
+
+## Test w przeglądarce i poprawki — 22.11.2026 (druga runda)
+
+Przejście pełnego scenariusza jury w lokalnej przeglądarce (czysta baza `bootstrap --demo`, pliki z paczki UMB) ujawniło i usunęło:
+
+- Przycisk „Podpowiedz jednostki” wysyłał `GET` do punktu `POST` (405) — podpowiedź w interfejsie nie działała. Słabe dopasowania są odfiltrowane, BKS jako koordynator nie jest przypisywany z archiwum.
+- Jednoczesne pierwsze wczytanie modelu E5 przez dwa żądania kończyło się błędem 500 (PyTorch „meta tensor”). Model jest ładowany pod blokadą i wstępnie przy starcie API; błąd modelu przełącza wyszukiwanie w tryb tekstowy.
+- Jeden worker wykonywał zadania po kolei, więc generowanie pisma (minuty) blokowało odczyt nowo wgranego wniosku. Generowanie ma osobną kolejkę.
+- nginx zapamiętywał adres kontenera API — po jego odtworzeniu interfejs zwracał 502. Dodano resolver Dockera.
+- Formularz nowego wniosku proponuje z dokumentu numer sprawy (kolejny w roku), datę wpływu (pieczęć, nagłówek e-maila), wnioskodawcę, przedmiot i formę udostępnienia oraz pokazuje termin z przesunięciem na dzień roboczy; urzędnik je zatwierdza.
+- Pytania z e-maili: powitanie nie usuwa zdania z pytaniem, nagłówki (Od/Temat/Wysłano) i prośba o odpowiedź na adres nie są pytaniami.
+- Wniosek wgrany do sprawy zaimportowanej wcześniej z kalendarium dołącza się do niej (zamiast błędu „Sygnatura już istnieje”).
+- Generator: model zapisywał liczby z angielskim separatorem (24,518 zamiast 24 518, co po polsku oznacza ułamek); liczby o cyfrach zgodnych ze źródłem są przywracane do zapisu źródła, pozostałe nadal oznaczane do weryfikacji.
+- Telefon na końcu zdania (z kropką) nie był wykrywany. Propozycje na skanach łączyły słowa z sąsiednich wierszy (zamaskowane słowo „Wniosek”); teraz pokazują też wykryty tekst.
+- Historia sprawy pokazuje szczegóły (termin i dni przedłużenia, data i sposób udostępnienia, format eksportu), rejestracja z pliku zapisuje zdarzenie; widoczne przedłużenie terminu; poprawna liczba materiałów i odmiana „strona/strony/stron”; statusy zadań po polsku; wyłączony akt w bazie wiedzy oznaczony jako „Wyłączony”, z tytułem i datą obowiązywania; w pakiecie ZIP nazwa załącznika zamiast identyfikatora.
+- Import XLSX ostrzega o odpowiedzi po terminie. Dane demo nie zawierają już odpowiedzi „wysłanej” rok po terminie.
+- Nowy skrypt `scripts/import_archive.py` wczytuje przykładowe sprawy UMB jako archiwum.

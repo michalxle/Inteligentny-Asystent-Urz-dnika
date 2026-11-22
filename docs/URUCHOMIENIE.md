@@ -22,6 +22,16 @@ Pierwsze uruchomienie tworzy konto `admin` z losowym hasłem. Dane są zapisane 
 
 Port PostgreSQL dla tego projektu: `127.0.0.1:55436`. Domyślne hasło bazy w Compose służy wyłącznie lokalnemu środowisku z portem związanym z loopback. Zmiana hasła istniejącej bazy wymaga zmiany hasła w PostgreSQL, nie tylko edycji Compose.
 
+## Archiwum przykładowych spraw UMB
+
+Aby wyszukiwanie podobnych spraw i podpowiedzi jednostek działały na prawdziwych przykładach, zaimportuj materiały organizatora (wnioski, odpowiedzi i kalendarium XLSX). Skrypt tworzy zamknięte sprawy archiwalne, odczytuje i indeksuje dokumenty; plików źródłowych nie zmienia.
+
+```sh
+.venv/bin/python scripts/import_archive.py --dir "Hacknation 2026 - UMB/Przykładowe wnioski i odpowiedzi " --calendar "Hacknation 2026 - UMB/Schemat kalendarium/WNIOSKI O UDOSTĘPNIANIE INFORMACJI PUBLICZNEJ.xlsx"
+```
+
+W wariancie kontenerowym podmontuj katalog z materiałami (np. `-v "$PWD/Hacknation 2026 - UMB:/umb:ro"`) i uruchom ten sam skrypt przez `docker compose ... run --rm api python scripts/import_archive.py --dir ... --calendar ...`.
+
 ## Zasoby AI i OCR
 
 Pobieranie jest jawnie wykonywanym etapem przygotowania, wymagającym Internetu. Praca aplikacji nie uruchamia pobierania modeli.
@@ -100,6 +110,10 @@ docker compose -p umb-assistant -f infra/compose.yaml --profile full up -d
 ```
 
 Interfejs jest wówczas na http://127.0.0.1:8080/. Model działa na hoście, a baza wewnątrz sieci Compose. Jeśli Ollama jest związana tylko z loopback hosta, kontener może nie mieć do niej dostępu: w takim wdrożeniu należy zapewnić osiągalną usługę modelu i ograniczyć jej dostęp do sieci aplikacji. Nie należy publicznie wystawiać portu Ollama. Ten profil wymaga osobnego testu na docelowym systemie; bazowy profil sprawdzany podczas implementacji używa natywnego API/worker i kontenerowej bazy na macOS.
+
+## Wydajność lokalnego modelu
+
+Na komputerze bez GPU generowanie trwa od kilkudziesięciu sekund do kilku minut. Limit czasu ustawia `OLLAMA_TIMEOUT` (domyślnie 900 s). Gdy Ollama działa w maszynie wirtualnej (Docker Desktop), może uruchomić więcej wątków niż fizycznych rdzeni, co spowalnia model wielokrotnie: ustaw `OLLAMA_NUM_THREAD` na liczbę fizycznych rdzeni, np. `OLLAMA_NUM_THREAD=6 docker compose ... up -d`. Okno kontekstu jest dobierane do objętości materiałów.
 
 ## Przygotowanie do odłączenia Internetu
 
