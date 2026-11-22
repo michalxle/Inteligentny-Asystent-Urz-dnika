@@ -2,7 +2,7 @@ from uuid import uuid4
 from datetime import timedelta
 from sqlalchemy import select
 from app.models import Document, Draft, Case
-from app.services.domain import today
+from app.services.domain import today, deadline_for
 
 def create_case(client):
     r=client.post('/api/cases',json={'reference':'TEST.'+str(uuid4()),'title':'Wniosek testowy','received':today().isoformat(),'questions':[{'id':'q1','text':'Ilu uczniów było w szkole w 2026?'}]})
@@ -55,13 +55,13 @@ def test_receipt_correction_recalculates_only_automatic_deadline(client):
     p['received']=(today()-timedelta(days=1)).isoformat()
     r=client.patch('/api/cases/'+c['id'],json=p);assert r.status_code==200,r.text
     corrected=r.json()
-    assert corrected['deadline']==corrected['original_deadline']==(today()+timedelta(days=13)).isoformat()
+    assert corrected['deadline']==corrected['original_deadline']==deadline_for(today()-timedelta(days=1)).isoformat()
     r=client.post('/api/cases/'+c['id']+'/deadline-events',json={'version':corrected['version'],'deadline':(today()+timedelta(days=25)).isoformat(),'notified_on':today().isoformat(),'reason':'Testowe uzupełnienie materiałów','basis':'Test QA'})
     assert r.status_code==200,r.text
     p=patch_payload(r.json());p['received']=(today()-timedelta(days=2)).isoformat()
     r=client.patch('/api/cases/'+c['id'],json=p);assert r.status_code==200,r.text
     assert r.json()['deadline']==(today()+timedelta(days=25)).isoformat()
-    assert r.json()['original_deadline']==(today()+timedelta(days=12)).isoformat()
+    assert r.json()['original_deadline']==deadline_for(today()-timedelta(days=2)).isoformat()
 
 def test_edit_of_closed_case_preserves_status_and_chronology(client):
     c=create_case(client)

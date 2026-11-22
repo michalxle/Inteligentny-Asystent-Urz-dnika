@@ -101,6 +101,10 @@ docker compose -p umb-assistant -f infra/compose.yaml --profile full up -d
 
 Interfejs jest wówczas na http://127.0.0.1:8080/. Model działa na hoście, a baza wewnątrz sieci Compose. Jeśli Ollama jest związana tylko z loopback hosta, kontener może nie mieć do niej dostępu: w takim wdrożeniu należy zapewnić osiągalną usługę modelu i ograniczyć jej dostęp do sieci aplikacji. Nie należy publicznie wystawiać portu Ollama. Ten profil wymaga osobnego testu na docelowym systemie; bazowy profil sprawdzany podczas implementacji używa natywnego API/worker i kontenerowej bazy na macOS.
 
+## Wydajność lokalnego modelu
+
+Na komputerze bez GPU generowanie trwa od kilkudziesięciu sekund do kilku minut. Limit czasu ustawia `OLLAMA_TIMEOUT` (domyślnie 900 s). Gdy Ollama działa w maszynie wirtualnej (Docker Desktop), może uruchomić więcej wątków niż fizycznych rdzeni, co spowalnia model wielokrotnie: ustaw `OLLAMA_NUM_THREAD` na liczbę fizycznych rdzeni, np. `OLLAMA_NUM_THREAD=6 docker compose ... up -d`. Okno kontekstu jest dobierane do objętości materiałów.
+
 ## Przygotowanie do odłączenia Internetu
 
 Zbuduj frontend, przygotuj obrazy kontenerów na architekturę docelową, zarchiwizuj lokalne wagi, OCR, fonty, zależności i ich licencje. `scripts/model_manifest.py` zapisuje wersje oraz sumy kontrolne zasobów do `.data/model-manifest.json`. Skrypt uruchomieniowy ustawia `HF_HUB_OFFLINE=1` i `TRANSFORMERS_OFFLINE=1`; Ollama uruchamiaj z `OLLAMA_NO_CLOUD=1`.

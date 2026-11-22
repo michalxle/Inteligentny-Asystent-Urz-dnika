@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     max_page_pixels: int = 40_000_000
     tessdata_prefix: Path = ROOT / '.data/tessdata'
     soffice: str = 'soffice'
+    semantic_threshold: float = 0.84
+    ollama_timeout: int = 900
+    ollama_num_ctx: int = 16384
+    ollama_num_thread: int = 0  # 0 = wybór Ollamy; w maszynie wirtualnej ustaw liczbę fizycznych rdzeni
 
 settings = Settings()
 settings.data_dir = settings.data_dir.resolve()
