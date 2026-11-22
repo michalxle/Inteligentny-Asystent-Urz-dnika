@@ -104,5 +104,50 @@ def test_attachment_export_requires_review_and_invalidates_previous_copy(client,
     e=response.json()
     assert client.post('/api/document-exports/'+e['id']+'/approve',json={'version':r['version'],'confirmed':True}).status_code==200
     assert client.get(e['url']).status_code==200
+    restored=client.get('/api/documents/'+doc.id+'/review').json()['exports'][0]
+    assert restored['id']==e['id'] and restored['current'] and restored['approved']
     client.patch('/api/documents/'+doc.id+'/redactions',json={'version':r['version'],'masks':[],'reviewed_pages':[1]})
     assert client.get(e['url']).status_code==409
+    assert not client.get('/api/documents/'+doc.id+'/review').json()['exports'][0]['current']
+
+def test_duplicate_request_returns_registered_case_and_cannot_reregister(client,db):
+    original=client.post('/api/imports',files={'file':('qa.txt',b'DANE SYNTETYCZNE QA','text/plain')}).json()['document']
+    doc=db.get(Document,original['id']);doc.state='ready';db.commit()
+    body={'reference':'TEST.'+str(uuid4()),'title':'Import testowy','received':today().isoformat()}
+    r=client.post('/api/imports/'+doc.id+'/confirm',json={'version':doc.version,'text':'DANE SYNTETYCZNE QA','case':body})
+    assert r.status_code==200,r.text
+    saved=r.json()
+    duplicate=client.post('/api/imports',files={'file':('qa-kopia.txt',b'DANE SYNTETYCZNE QA','text/plain')}).json()
+    assert duplicate['duplicate'] and duplicate['document']['case_id']==saved['case_id']
+    assert duplicate['document']['id']==saved['id']
+    body['reference']='TEST.'+str(uuid4())
+    r=client.post('/api/imports/'+doc.id+'/confirm',json={'version':saved['version'],'text':'Inny tekst','case':body})
+    assert r.status_code==409
+    assert client.get('/api/imports/'+doc.id).json()['document']['text']=='DANE SYNTETYCZNE QA'
+
+def test_failed_document_job_has_terminal_document_state(client,db,monkeypatch):
+    from contextlib import contextmanager
+    import app.worker as worker
+    from app.models import Job
+    r=client.post('/api/imports',files={'file':('bad.pdf',b'%PDF-1.7\nINVALID','application/pdf')}).json()
+    @contextmanager
+    def session():yield db
+    def failed_extract(_):raise ValueError('Niepoprawny dokument testowy')
+    monkeypatch.setattr(worker,'SessionLocal',session)
+    monkeypatch.setattr(worker,'extract',failed_extract)
+    worker.execute(r['job']['id'])
+    assert db.get(Job,r['job']['id']).status=='failed'
+    assert client.get('/api/imports/'+r['document']['id']).json()['document']['state']=='failed'
+
+def test_recording_delivery_preserves_verified_exports_and_closed_status(client):
+    c=create_case(client);d=client.post('/api/cases/'+c['id']+'/manual-drafts').json()
+    d=client.patch('/api/drafts/'+d['id'],json={'version':d['version'],'text':'Dane syntetyczne: 120 uczniów.','coverage':[{'question_id':'q1','reviewed':True,'missing':[]}]}).json()
+    assert client.post('/api/drafts/'+d['id']+'/approve',json={'version':d['version'],'confirmed':True}).status_code==200
+    e=client.post('/api/drafts/'+d['id']+'/exports?format=txt').json()
+    assert client.post('/api/cases/'+c['id']+'/sent',json={'version':c['version'],'answered':today().isoformat(),'delivery':'Test QA'}).status_code==200
+    assert client.get(e['url']).status_code==200
+    assert client.post('/api/drafts/'+d['id']+'/exports?format=txt').status_code==200
+    d=client.patch('/api/drafts/'+d['id'],json={'version':d['version'],'text':'Korekta testowa: 120 uczniów.','coverage':d['coverage']}).json()
+    assert client.get('/api/cases/'+c['id']).json()['case']['status']=='zakonczony'
+    assert client.post('/api/drafts/'+d['id']+'/approve',json={'version':d['version'],'confirmed':True}).status_code==200
+    assert client.get('/api/cases/'+c['id']).json()['case']['status']=='zakonczony'

@@ -187,6 +187,9 @@ def deadline(ident:str,body:Deadline,user=Depends(current_user),db:DBSession=Dep
 def sent(ident:str,body:Sent,user=Depends(current_user),db:DBSession=Depends(get_db)):
     c=obj(db,Case,ident,True);revision(c,body.version)
     if not c.received<=body.answered<=today():raise HTTPException(422,'Niepoprawna data udostępnienia')
+    # Recording delivery changes workflow, not the verified contents of the letter.
+    for d in db.scalars(select(Draft).where(Draft.case_id==ident,Draft.case_version==c.version)):
+        d.case_version=c.version+1
     c.answered=body.answered;c.delivery=body.delivery;c.status='zakonczony';c.version+=1;log(db,user,ident,'manually_marked_sent',body.model_dump(mode='json'));db.commit();return case_dict(c)
 @app.get('/api/units')
 def units(user=Depends(current_user),db:DBSession=Depends(get_db)):return [{'id':u.id,'name':u.name,'description':u.description,'source':u.source} for u in db.scalars(select(Unit)).all()]
@@ -217,7 +220,10 @@ async def upload_file(file,kind,case_id,unit_id,db,user):
                 if any('vbaProject' in n for n in z.namelist()):raise ValueError()
         except (ValueError,zipfile.BadZipFile):raise HTTPException(415,'Niepoprawny lub niedozwolony dokument Word')
     sha=hashlib.sha256(content).hexdigest()
-    existing=db.scalar(select(Document).where(Document.sha256==sha,Document.case_id==case_id,Document.kind==kind))
+    duplicate_query=select(Document).where(Document.sha256==sha,Document.kind==kind)
+    if kind!='request':duplicate_query=duplicate_query.where(Document.case_id==case_id)
+    # Prefer a registered request to an abandoned upload of the same file.
+    existing=db.scalar(duplicate_query.order_by(Document.case_id.is_(None),Document.created).limit(1))
     if existing:return {'document':doc_dict(existing),'job':None,'duplicate':True}
     ident=uid();path=settings.data_dir/'files'/(ident+suffix);path.write_bytes(content)
     d=Document(id=ident,case_id=case_id,unit_id=unit_id,name=name,kind=kind,path=str(path),sha256=sha)
@@ -282,7 +288,7 @@ def save_draft(ident:str,body:DraftPatch,user=Depends(current_user),db:DBSession
     expected={q['id'] for q in c.questions}
     if {a.get('question_id') for a in body.coverage}!=expected:raise HTTPException(422,'Sprawdź pokrycie wszystkich pytań')
     d.text=body.text;d.coverage=body.coverage;d.redactions=[];d.version+=1;d.approved_version=None;d.case_version=c.version
-    db.add(DraftVersion(draft_id=d.id,version=d.version,text=d.text,redactions=[],author=user.username));c.status='projekt_odpowiedzi';log(db,user,c.id,'draft_edited',{'id':ident,'version':d.version});db.commit();return draft_dict(d)
+    db.add(DraftVersion(draft_id=d.id,version=d.version,text=d.text,redactions=[],author=user.username));c.status='zakonczony' if c.answered else 'projekt_odpowiedzi';log(db,user,c.id,'draft_edited',{'id':ident,'version':d.version});db.commit();return draft_dict(d)
 @app.post('/api/drafts/{ident}/redaction-scan')
 def redaction_scan(ident:str,user=Depends(current_user),db:DBSession=Depends(get_db)):
     d=obj(db,Draft,ident,True);detected=find_pii(d.text)
@@ -306,7 +312,7 @@ def approve_draft(ident:str,body:Approve,user=Depends(current_user),db:DBSession
     if not body.confirmed or not d.coverage or any(not a.get('reviewed') or a.get('missing') for a in d.coverage):raise HTTPException(422,'Sprawdź kompletność i rozwiąż wszystkie braki')
     if any(r['state']=='proposed' for r in d.redactions):raise HTTPException(422,'Rozpatrz wszystkie propozycje anonimizacji')
     if '[Do uzupełnienia:' in d.text or 'DO UZUPEŁNIENIA:' in d.text:raise HTTPException(422,'W piśmie pozostały znaczniki braków')
-    d.approved_version=d.version;obj(db,Case,d.case_id).status='gotowy_do_eksportu';log(db,user,d.case_id,'draft_approved',{'id':ident,'version':d.version});db.commit();return draft_dict(d)
+    d.approved_version=d.version;c=obj(db,Case,d.case_id);c.status='zakonczony' if c.answered else 'gotowy_do_eksportu';log(db,user,d.case_id,'draft_approved',{'id':ident,'version':d.version});db.commit();return draft_dict(d)
 @app.post('/api/drafts/{ident}/exports')
 def letter_export(ident:str,format:Literal['txt','docx','pdf','doc']='pdf',user=Depends(current_user),db:DBSession=Depends(get_db)):
     d=obj(db,Draft,ident,True);assert_draft_current(db,d)
@@ -327,7 +333,7 @@ def page_image(ident:str,page:int,user=Depends(current_user),db:DBSession=Depend
 def document_review(ident:str,user=Depends(current_user),db:DBSession=Depends(get_db)):
     d=obj(db,Document,ident)
     review=db.get(AttachmentReview,ident)
-    return {'document':doc_dict(d),'review':{'version':review.version if review else 0,'masks':review.masks if review else [],'reviewed_pages':review.reviewed_pages if review else []},'pages':[{'page':p['page'],'text':p['text'],'words':p['words'],'ocr':p['ocr']} for p in d.pages],'exports':[{'id':e.id,'approved':e.approved,'version':e.version,'url':'/api/exports/'+e.id} for e in db.scalars(select(Export).where(Export.document_id==ident).order_by(Export.created.desc())).all()]}
+    return {'document':doc_dict(d),'review':{'version':review.version if review else 0,'masks':review.masks if review else [],'reviewed_pages':review.reviewed_pages if review else []},'pages':[{'page':p['page'],'text':p['text'],'words':p['words'],'ocr':p['ocr']} for p in d.pages],'exports':[{'id':e.id,'approved':e.approved,'version':e.version,'current':bool(review and review.document_version==d.version and e.version==review.version),'url':'/api/exports/'+e.id} for e in db.scalars(select(Export).where(Export.document_id==ident).order_by(Export.created.desc())).all()]}
 @app.patch('/api/documents/{ident}/redactions')
 def masks(ident:str,body:Review,user=Depends(current_user),db:DBSession=Depends(get_db)):
     d=obj(db,Document,ident,True)

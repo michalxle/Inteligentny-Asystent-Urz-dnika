@@ -34,7 +34,7 @@ Film i prezentacja konkursowa są osobnymi materiałami do wykonania zgodnie ze 
 
 ## Wykonana weryfikacja
 
-- 17 testów backendu przeszło: sesje/CSRF, role, wersjonowanie, terminy, import i eksport, usuwanie tekstu oraz pikseli PDF i obrót stron.
+- 20 testów backendu przeszło: sesje/CSRF, role, wersjonowanie, terminy, import i eksport, usuwanie tekstu oraz pikseli PDF i obrót stron.
 - Trzy testy interfejsu sprawdzają współrzędne zaznaczeń Unicode oraz rok wpływu w rejestrze. Kompilacja TypeScript/Vite przeszła.
 - Lokalny Bielik przygotował odpowiedź 120/132 uczniów na podstawie jednego syntetycznego źródła; czas jednego testu około 18 sekund. To test działania, a nie porównanie modeli ani pomiar jakości na całym archiwum.
 - Potwierdzono gotowość lokalnych usług i wyszukiwanie w trybie hybrydowym.
@@ -49,4 +49,7 @@ Film i prezentacja konkursowa są osobnymi materiałami do wykonania zgodnie ze 
 - Filtr roku bazuje na dacie wpływu i obsługuje sygnatury bez roku.
 - Nieudany odczyt ma komunikat błędu zamiast bezterminowego komunikatu przetwarzania. Zastąpienie importowanego pliku odświeża treść i pytania. Ponowny import już przypisanego wniosku kieruje do istniejącej sprawy.
 - Odświeżenie dokumentu w tle nie resetuje edytowanego tekstu, jeśli jego wersja się nie zmieniła.
-- Ponowna weryfikacja pełnych ścieżek w przeglądarce trwa; test automatyczny pozostaje niezaliczony do czasu ukończenia jego pełnego przebiegu.
+- Zakończono ręczne testy sekwencji użytkowych w lokalnej przeglądarce; opis wyników znajduje się w [TESTY_UZYTKOWE.md](TESTY_UZYTKOWE.md). Osobny skrypt automatyczny pozostaje bez potwierdzonego pełnego przebiegu.
+- Po ponownym otwarciu załącznika wraca aktualna kopia PDF i stan jej zatwierdzenia. Kopie starszych wersji przeglądu nie są przywracane jako aktualne.
+- Odnotowanie wysyłki nie unieważnia aktualnego pisma. Praca z odpowiedzią po zamknięciu nie zmienia sprawy ponownie w otwartą.
+- Poprawiono ponowne tworzenie korzenia React podczas aktualizacji kodu przez Vite, opisy przycisków nawigacji i pusty stan bazy wiedzy.

@@ -26,7 +26,7 @@ def execute(job_id):
             elif job.kind=='index':
                 doc=db.get(Document,job.target);index_document(db,doc);doc.metadata_={**doc.metadata_,'indexed':True};job.result={'document_id':doc.id}
             elif job.kind=='draft':
-                case=db.get(Case,job.target);draft=generate(db,case);job.result={'draft_id':draft.id};case.status='projekt_odpowiedzi'
+                case=db.get(Case,job.target);draft=generate(db,case);job.result={'draft_id':draft.id};case.status='zakonczony' if case.answered else 'projekt_odpowiedzi'
                 db.add(Event(case_id=case.id,type='draft_generated',actor='local-ai',detail={'draft_id':draft.id}))
             job.status='done';job.progress='Gotowe';job.lease_until=None;db.commit()
         except Exception as exc:
